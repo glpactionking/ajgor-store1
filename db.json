@@ -1,0 +1,11 @@
+{
+  "products": [
+    { "id": 1, "name": "Premium Key - 1 Month",  "price": 299,  "stock": 10, "keys": [] },
+    { "id": 2, "name": "Premium Key - 3 Month",  "price": 799,  "stock": 10, "keys": [] },
+    { "id": 3, "name": "Premium Key - Lifetime", "price": 1999, "stock": 5,  "keys": [] },
+    { "id": 4, "name": "Bulk Pack - 10 Keys",    "price": 2499, "stock": 20, "keys": [] }
+  ],
+  "users": {},
+  "orders": [],
+  "pendingPayments": {}
+}

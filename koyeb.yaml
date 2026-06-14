@@ -1,0 +1,10 @@
+name: ajgor-key-store
+services:
+  - name: bot
+    type: web
+    run: node server.js
+    build:
+      buildpack: nodejs
+    ports:
+      - port: 3000
+        protocol: http
