@@ -1,9 +1,37 @@
 {
   "products": [
-    { "id": 1, "name": "Premium Key - 1 Month",  "price": 299,  "stock": 10, "keys": [] },
-    { "id": 2, "name": "Premium Key - 3 Month",  "price": 799,  "stock": 10, "keys": [] },
-    { "id": 3, "name": "Premium Key - Lifetime", "price": 1999, "stock": 5,  "keys": [] },
-    { "id": 4, "name": "Bulk Pack - 10 Keys",    "price": 2499, "stock": 20, "keys": [] }
+    {
+      "id": 1,
+      "name": "Premium Key",
+      "description": "Full access premium key",
+      "durations": [
+        { "id": "1d",  "label": "1 Day",    "price": 81,   "stock": 10, "keys": [] },
+        { "id": "3d",  "label": "3 Days",   "price": 180,  "stock": 10, "keys": [] },
+        { "id": "7d",  "label": "7 Days",   "price": 360,  "stock": 10, "keys": [] },
+        { "id": "15d", "label": "15 Days",  "price": 630,  "stock": 10, "keys": [] },
+        { "id": "30d", "label": "30 Days",  "price": 900,  "stock": 10, "keys": [] }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Basic Key",
+      "description": "Basic access key",
+      "durations": [
+        { "id": "1d",  "label": "1 Day",    "price": 50,   "stock": 10, "keys": [] },
+        { "id": "7d",  "label": "7 Days",   "price": 299,  "stock": 10, "keys": [] },
+        { "id": "30d", "label": "30 Days",  "price": 799,  "stock": 10, "keys": [] }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "VIP Key",
+      "description": "VIP premium access",
+      "durations": [
+        { "id": "7d",  "label": "7 Days",   "price": 499,  "stock": 5,  "keys": [] },
+        { "id": "30d", "label": "30 Days",  "price": 1499, "stock": 5,  "keys": [] },
+        { "id": "lf",  "label": "Lifetime", "price": 2999, "stock": 5,  "keys": [] }
+      ]
+    }
   ],
   "users": {},
   "orders": [],
