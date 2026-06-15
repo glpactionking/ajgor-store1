@@ -2,12 +2,8 @@
  * ================================
  * AJGOR KEY STORE - FULL SYSTEM
  * ================================
- * 
- * FLOW 1 - DIRECT BUY:
- * Product select → Price ka QR → Pay → VC Verify → Key Deliver
- *
- * FLOW 2 - WALLET ADD:
- * Amount enter → QR → Pay → VC Verify → Wallet Credit
+ * Product → Duration Select → Price → QR Pay → VC Verify → Key Deliver
+ * Wallet Add → QR Pay → VC Verify → Balance Credit
  */
 
 const express = require("express");
@@ -25,8 +21,8 @@ const CONFIG = {
   TELEGRAM_TOKEN: process.env.TELEGRAM_TOKEN || "8658966276:AAGpUJpg54hUu7-8I1tUE1dDNTMaePiRobM",
   VC_API_KEY:     process.env.VC_API_KEY     || "PAY91646C96F5A3C5427A811042",
   VC_API_URL:     "https://vcapi.vcstore.site/payment_api.php",
-  UPI_ID:         process.env.UPI_ID         || "PAYMENT GATEWAY",
-  UPI_NAME:       "PAYMENT GATEWAY",
+  UPI_ID:         process.env.UPI_ID         || "glpactionking-4@okhdfcbank",
+  UPI_NAME:       "AJGOR ALI",
   ADMIN_CHAT_ID:  process.env.ADMIN_CHAT_ID  || "8013912448",
   MIN_WALLET:     10,
   MAX_WALLET:     10000,
@@ -35,6 +31,509 @@ const CONFIG = {
 
 // ════════════════════════════════════════
 // DATABASE
+// ════════════════════════════════════════
+const DB_FILE = "./db.json";
+
+function loadDB() {
+  if (!fs.existsSync(DB_FILE)) {
+    const init = {
+      // Products with durations
+      products: [
+        {
+          id: 1,
+          name: "Premium Key",
+          description: "Full access premium key",
+          durations: [
+            { id: "1d",  label: "1 Day",   price: 81,   stock: 10, keys: [] },
+            { id: "3d",  label: "3 Days",  price: 180,  stock: 10, keys: [] },
+            { id: "7d",  label: "7 Days",  price: 360,  stock: 10, keys: [] },
+            { id: "15d", label: "15 Days", price: 630,  stock: 10, keys: [] },
+            { id: "30d", label: "30 Days", price: 900,  stock: 10, keys: [] },
+          ]
+        },
+        {
+          id: 2,
+          name: "Basic Key",
+          description: "Basic access key",
+          durations: [
+            { id: "1d",  label: "1 Day",   price: 50,   stock: 10, keys: [] },
+            { id: "7d",  label: "7 Days",  price: 299,  stock: 10, keys: [] },
+            { id: "30d", label: "30 Days", price: 799,  stock: 10, keys: [] },
+          ]
+        },
+        {
+          id: 3,
+          name: "VIP Key",
+          description: "VIP premium access",
+          durations: [
+            { id: "7d",  label: "7 Days",   price: 499,  stock: 5, keys: [] },
+            { id: "30d", label: "30 Days",  price: 1499, stock: 5, keys: [] },
+            { id: "lf",  label: "Lifetime", price: 2999, stock: 5, keys: [] },
+          ]
+        },
+      ],
+      users: {},
+      orders: [],
+      pendingPayments: {},
+    };
+    fs.writeFileSync(DB_FILE, JSON.stringify(init, null, 2));
+    return init;
+  }
+  return JSON.parse(fs.readFileSync(DB_FILE));
+}
+
+function saveDB(db) {
+  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+}
+
+// ════════════════════════════════════════
+// USER / WALLET
+// ════════════════════════════════════════
+function getUser(db, chatId) {
+  const id = String(chatId);
+  if (!db.users[id]) db.users[id] = { balance: 0, orders: [] };
+  return db.users[id];
+}
+function getBalance(db, chatId) { return getUser(db, chatId).balance || 0; }
+function addBalance(db, chatId, amount) {
+  getUser(db, chatId).balance = +(getBalance(db, chatId) + Number(amount)).toFixed(2);
+}
+function deductBalance(db, chatId, amount) {
+  getUser(db, chatId).balance = +(getBalance(db, chatId) - Number(amount)).toFixed(2);
+}
+
+// ════════════════════════════════════════
+// UPI QR
+// ════════════════════════════════════════
+function makeQR(amount, txnId) {
+  const upi =
+    `upi://pay?pa=${CONFIG.UPI_ID}` +
+    `&pn=${encodeURIComponent(CONFIG.UPI_NAME)}` +
+    `&tid=${txnId}&tr=${txnId}` +
+    `&tn=${encodeURIComponent("AJGOR Key Store")}` +
+    `&am=${amount}&cu=INR`;
+  return "https://quickchart.io/qr?text=" + encodeURIComponent(upi) + "&size=300&margin=2";
+}
+
+// ════════════════════════════════════════
+// VC VERIFY
+// ════════════════════════════════════════
+async function vcVerify(orderId, amount) {
+  try {
+    const url = `${CONFIG.VC_API_URL}?api_key=${CONFIG.VC_API_KEY}&order_id=${encodeURIComponent(orderId)}&amount=${encodeURIComponent(amount)}`;
+    const res = await axios.get(url, { timeout: 12000 });
+    console.log(`[VC] ${orderId}:`, JSON.stringify(res.data));
+    return res.data;
+  } catch (e) {
+    console.error("[VC]", e.message);
+    return null;
+  }
+}
+
+// ════════════════════════════════════════
+// KEY
+// ════════════════════════════════════════
+function autoKey(prefix) {
+  const s = () => Math.random().toString(36).substring(2, 6).toUpperCase();
+  return `${prefix || "AJGOR"}-${s()}-${s()}-${s()}-${s()}`;
+}
+
+function pickKey(db, productId, durationId) {
+  const p = db.products.find(x => x.id === productId);
+  if (!p) return null;
+  const d = p.durations.find(x => x.id === durationId);
+  if (!d) return null;
+  return d.keys && d.keys.length > 0 ? d.keys.shift() : autoKey(p.name.split(" ")[0].toUpperCase());
+}
+
+// ════════════════════════════════════════
+// ADMIN NOTIFY
+// ════════════════════════════════════════
+function adminMsg(text) {
+  if (CONFIG.ADMIN_CHAT_ID !== "YOUR_CHAT_ID") {
+    bot.sendMessage(CONFIG.ADMIN_CHAT_ID, text, { parse_mode: "Markdown" }).catch(() => {});
+  }
+}
+
+// ════════════════════════════════════════
+// BOT
+// ════════════════════════════════════════
+const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: true });
+const STATE = {};
+
+// ── MAIN MENU ────────────────────────────────
+function mainMenu(chatId, name) {
+  const db  = loadDB();
+  const bal = getBalance(db, chatId);
+  bot.sendMessage(chatId,
+    `👋 *Welcome${name ? " " + name : ""}!*\n\n` +
+    `🏪 *AJGOR KEY STORE*\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `💰 *Wallet Balance:* ₹${bal.toFixed(2)}\n` +
+    `━━━━━━━━━━━━━━━━━━`,
+    {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: [
+        [{ text: "🛒 Shop — Keys Kharido", callback_data: "shop" }],
+        [
+          { text: "💳 Add Wallet Balance", callback_data: "wallet_add" },
+          { text: "💰 My Balance",         callback_data: "my_balance" },
+        ],
+        [{ text: "📦 My Orders", callback_data: "my_orders" }],
+        [{ text: "💬 Support",   callback_data: "support"   }],
+      ]}
+    }
+  );
+}
+
+// ── /start ──
+bot.onText(/\/start/, msg => {
+  delete STATE[msg.chat.id];
+  mainMenu(msg.chat.id, msg.from.first_name);
+});
+bot.onText(/\/balance/, msg => {
+  const db = loadDB();
+  bot.sendMessage(msg.chat.id, `💰 *Balance:* ₹${getBalance(db, msg.chat.id).toFixed(2)}`, { parse_mode: "Markdown" });
+});
+bot.onText(/\/orders/, msg => showOrders(msg.chat.id));
+
+// ── /admin ──
+bot.onText(/\/admin/, msg => {
+  if (String(msg.chat.id) !== String(CONFIG.ADMIN_CHAT_ID)) {
+    bot.sendMessage(msg.chat.id, "❌ *Access Denied!*", { parse_mode: "Markdown" });
+    return;
+  }
+  adminPanel(msg.chat.id);
+});
+
+// ════════════════════════════════════════
+// TEXT INPUT
+// ════════════════════════════════════════
+bot.on("message", async msg => {
+  const chatId = msg.chat.id;
+  const text   = msg.text;
+  if (!text || text.startsWith("/")) return;
+  const st = STATE[chatId];
+  if (!st) return;
+
+  // ── Admin: New Product name ──
+  if (st.step === "adm_new_prod_name") {
+    STATE[chatId] = { step: "adm_new_prod_desc", name: text.trim() };
+    bot.sendMessage(chatId, `✅ Name: *${text.trim()}*\n\n📝 Ab product description type karo:`, { parse_mode: "Markdown" });
+    return;
+  }
+
+  if (st.step === "adm_new_prod_desc") {
+    const db = loadDB();
+    const newId = db.products.length > 0 ? Math.max(...db.products.map(p => p.id)) + 1 : 1;
+    db.products.push({ id: newId, name: st.name, description: text.trim(), durations: [] });
+    saveDB(db);
+    delete STATE[chatId];
+    bot.sendMessage(chatId,
+      `✅ *Product Add Ho Gaya!*\n\n🔑 *${st.name}*\n📝 ${text.trim()}\n\nAb is product mein durations add karo.`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [
+        [{ text: "➕ Duration Add Karo", callback_data: `adm_dur_add_${newId}` }],
+        [{ text: "⚙️ Admin Panel",       callback_data: "adm_back"             }],
+      ]}}
+    );
+    return;
+  }
+
+  // ── Admin: Edit Product Name ──
+  if (st.step === "adm_edit_prod_name") {
+    const db = loadDB();
+    const p  = db.products.find(x => x.id === st.productId);
+    if (!p) { bot.sendMessage(chatId, "❌ Product nahi mila."); return; }
+    const oldName = p.name;
+    p.name = text.trim();
+    saveDB(db);
+    delete STATE[chatId];
+    bot.sendMessage(chatId,
+      `✅ *Name Update Ho Gaya!*\n\n❌ Old: ${oldName}\n✅ New: *${p.name}*`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: `adm_editprod_${st.productId}` }]] }}
+    );
+    return;
+  }
+
+  // ── Admin: Edit Product Description ──
+  if (st.step === "adm_edit_prod_desc") {
+    const db = loadDB();
+    const p  = db.products.find(x => x.id === st.productId);
+    if (!p) { bot.sendMessage(chatId, "❌ Product nahi mila."); return; }
+    p.description = text.trim();
+    saveDB(db);
+    delete STATE[chatId];
+    bot.sendMessage(chatId,
+      `✅ *Description Update Ho Gayi!*\n\n📝 ${p.description}`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: `adm_editprod_${st.productId}` }]] }}
+    );
+    return;
+  }
+
+  // ── Admin: New Duration - label ──
+  if (st.step === "adm_new_dur_label") {
+    STATE[chatId] = { ...st, step: "adm_new_dur_price", label: text.trim() };
+    bot.sendMessage(chatId, `✅ Label: *${text.trim()}*\n\n💰 Ab price type karo (sirf number, e.g. 299):`, { parse_mode: "Markdown" });
+    return;
+  }
+
+  if (st.step === "adm_new_dur_price") {
+    const price = Number(text.trim());
+    if (!price || price < 1) { bot.sendMessage(chatId, "❌ Valid price daalo (e.g. 299)"); return; }
+    STATE[chatId] = { ...st, step: "adm_new_dur_stock", price };
+    bot.sendMessage(chatId, `✅ Price: *₹${price}*\n\n📦 Ab stock type karo (e.g. 10):`, { parse_mode: "Markdown" });
+    return;
+  }
+
+  if (st.step === "adm_new_dur_stock") {
+    const stock = parseInt(text.trim());
+    if (!stock || stock < 0) { bot.sendMessage(chatId, "❌ Valid stock daalo (e.g. 10)"); return; }
+    const db  = loadDB();
+    const p   = db.products.find(x => x.id === st.productId);
+    if (!p) { bot.sendMessage(chatId, "❌ Product nahi mila."); return; }
+    const durId = st.label.toLowerCase().replace(/\s+/g, "") + Date.now().toString().slice(-4);
+    p.durations.push({ id: durId, label: st.label, price: st.price, stock, keys: [] });
+    saveDB(db);
+    delete STATE[chatId];
+    bot.sendMessage(chatId,
+      `✅ *Duration Add Ho Gaya!*\n\n🔑 Product: *${p.name}*\n⏱ Label: *${st.label}*\n💰 Price: *₹${st.price}*\n📦 Stock: *${stock}*`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [
+        [{ text: "➕ Aur Duration Add Karo", callback_data: `adm_dur_add_${p.id}` }],
+        [{ text: "🔑 Product Dekho",         callback_data: `adm_editprod_${p.id}` }],
+        [{ text: "⚙️ Admin Panel",            callback_data: "adm_back"             }],
+      ]}}
+    );
+    return;
+  }
+
+  // ── Admin: Edit Duration Price ──
+  if (st.step === "adm_edit_dur_price") {
+    const price = Number(text.trim());
+    if (!price || price < 1) { bot.sendMessage(chatId, "❌ Valid price daalo (e.g. 299)"); return; }
+    const db = loadDB();
+    const p  = db.products.find(x => x.id === st.productId);
+    const d  = p?.durations.find(x => x.id === st.durationId);
+    if (!d) { bot.sendMessage(chatId, "❌ Duration nahi mila."); return; }
+    const oldPrice = d.price;
+    d.price = price;
+    saveDB(db);
+    delete STATE[chatId];
+    bot.sendMessage(chatId,
+      `✅ *Price Update Ho Gaya!*\n\n⏱ ${d.label}\n❌ Old: ₹${oldPrice}\n✅ New: *₹${price}*`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: `adm_editdur_${st.productId}_${st.durationId}` }]] }}
+    );
+    return;
+  }
+
+  // ── Admin: Edit Duration Stock ──
+  if (st.step === "adm_edit_dur_stock") {
+    const stock = parseInt(text.trim());
+    if (isNaN(stock) || stock < 0) { bot.sendMessage(chatId, "❌ Valid stock daalo (e.g. 10)"); return; }
+    const db = loadDB();
+    const p  = db.products.find(x => x.id === st.productId);
+    const d  = p?.durations.find(x => x.id === st.durationId);
+    if (!d) { bot.sendMessage(chatId, "❌ Duration nahi mila."); return; }
+    d.stock = stock;
+    saveDB(db);
+    delete STATE[chatId];
+    bot.sendMessage(chatId,
+      `✅ *Stock Update Ho Gaya!*\n\n⏱ ${d.label}\n📦 New Stock: *${stock}*`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: `adm_editdur_${st.productId}_${st.durationId}` }]] }}
+    );
+    return;
+  }
+
+  // ── Admin: Edit Duration Label ──
+  if (st.step === "adm_edit_dur_label") {
+    const db = loadDB();
+    const p  = db.products.find(x => x.id === st.productId);
+    const d  = p?.durations.find(x => x.id === st.durationId);
+    if (!d) { bot.sendMessage(chatId, "❌ Duration nahi mila."); return; }
+    const old = d.label;
+    d.label = text.trim();
+    saveDB(db);
+    delete STATE[chatId];
+    bot.sendMessage(chatId,
+      `✅ *Label Update Ho Gaya!*\n\n❌ Old: ${old}\n✅ New: *${d.label}*`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: `adm_editdur_${st.productId}_${st.durationId}` }]] }}
+    );
+    return;
+  }
+
+  // Admin: add keys
+  if (st.step === "adm_typing_keys") {
+    const lines = text.trim().split("\n").map(k => k.trim()).filter(k => k.length > 3);
+    if (!lines.length) { bot.sendMessage(chatId, "❌ Valid keys nahi mili."); return; }
+    const db = loadDB();
+    const p  = db.products.find(x => x.id === st.productId);
+    const d  = p?.durations.find(x => x.id === st.durationId);
+    if (!d) { bot.sendMessage(chatId, "❌ Duration nahi mila."); return; }
+    d.keys  = [...(d.keys || []), ...lines];
+    d.stock = d.keys.length;
+    saveDB(db);
+    delete STATE[chatId];
+    bot.sendMessage(chatId,
+      `✅ *${lines.length} keys add ho gayi!*\n🔑 *${p.name} - ${d.label}*\n📦 Stock: *${d.stock}*`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "⚙️ Admin Panel", callback_data: "adm_back" }]] }}
+    );
+    return;
+  }
+
+  // Admin: add balance - get user id
+  if (st.step === "adm_addbal_uid") {
+    STATE[chatId] = { step: "adm_addbal_amount", targetId: text.trim() };
+    bot.sendMessage(chatId, `💰 Amount type karo for user \`${text.trim()}\`:`, { parse_mode: "Markdown" });
+    return;
+  }
+
+  // Admin: add balance - get amount
+  if (st.step === "adm_addbal_amount") {
+    const amount = Number(text.trim());
+    if (!amount || amount < 1) { bot.sendMessage(chatId, "❌ Valid amount daalo."); return; }
+    const db = loadDB();
+    addBalance(db, st.targetId, amount);
+    saveDB(db);
+    const newBal = getBalance(db, st.targetId);
+    delete STATE[chatId];
+    bot.sendMessage(chatId,
+      `✅ ₹${amount} add ho gaya!\n👤 User: \`${st.targetId}\`\n💳 Balance: ₹${newBal.toFixed(2)}`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "⚙️ Admin", callback_data: "adm_back" }]] }}
+    );
+    bot.sendMessage(st.targetId, `🎁 *Admin ne ₹${amount} add kiya!*\n💳 Balance: ₹${newBal.toFixed(2)}`, { parse_mode: "Markdown" }).catch(() => {});
+    return;
+  }
+
+  // Wallet custom amount
+  if (st.step === "wallet_amount") {
+    const amount = Number(text.trim());
+    if (!amount || amount < CONFIG.MIN_WALLET) {
+      bot.sendMessage(chatId, `❌ Minimum: *₹${CONFIG.MIN_WALLET}*`, { parse_mode: "Markdown" }); return;
+    }
+    if (amount > CONFIG.MAX_WALLET) {
+      bot.sendMessage(chatId, `❌ Maximum: *₹${CONFIG.MAX_WALLET}*`, { parse_mode: "Markdown" }); return;
+    }
+    STATE[chatId] = { step: "wallet_pay", amount };
+    await sendQR(chatId, amount, "wallet", null, null);
+  }
+});
+
+// ════════════════════════════════════════
+// CALLBACKS
+// ════════════════════════════════════════
+bot.on("callback_query", async query => {
+  const chatId = query.message.chat.id;
+  const data   = query.data;
+  const name   = query.from.first_name;
+  await bot.answerCallbackQuery(query.id);
+
+  // Main Menu
+  if (data === "main_menu") {
+    delete STATE[chatId];
+    mainMenu(chatId, name);
+  }
+
+  // ══════════════════════════
+  // SHOP — Product List
+  // ══════════════════════════
+  else if (data === "shop") {
+    const db   = loadDB();
+    const bal  = getBalance(db, chatId);
+    const rows = db.products.map(p => ([{
+      text: `🔑 ${p.name}`,
+      callback_data: `prod_${p.id}`
+    }]));
+    rows.push([{ text: "🏠 Main Menu", callback_data: "main_menu" }]);
+
+    bot.sendMessage(chatId,
+      `🛒 *Select a Product:*\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `💰 Wallet: *₹${bal.toFixed(2)}*\n` +
+      `━━━━━━━━━━━━━━━━━━`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: rows } }
+    );
+  }
+
+  // ══════════════════════════
+  // PRODUCT → Duration list
+  // ══════════════════════════
+  else if (data.startsWith("prod_")) {
+    const productId = parseInt(data.replace("prod_", ""));
+    const db        = loadDB();
+    const p         = db.products.find(x => x.id === productId);
+    const bal       = getBalance(db, chatId);
+    if (!p) { bot.sendMessage(chatId, "❌ Product nahi mila."); return; }
+
+    // Duration info text
+    let infoText = `🔑 *${p.name}*\n`;
+    infoText += `📝 ${p.description}\n`;
+    infoText += `━━━━━━━━━━━━━━━━━━\n\n`;
+    p.durations.forEach(d => {
+      const inStock = d.stock > 0;
+      infoText += `⏱ *${d.label}*\n`;
+      infoText += `💰 ₹${d.price}\n`;
+      infoText += `📦 ${inStock ? "✅ In Stock" : "❌ Out of Stock"}\n\n`;
+    });
+    infoText += `━━━━━━━━━━━━━━━━━━\n`;
+    infoText += `👇 *Select duration below:*`;
+
+    const rows = p.durations.map(d => ([{
+      text: `📦 Buy ${d.label} — ₹${d.price} ${d.stock > 0 ? "" : "❌"}`,
+      callback_data: `dur_${p.id}_${d.id}`
+    }]));
+    rows.push([{ text: "🔙 Back to Shop", callback_data: "shop" }]);
+
+    bot.sendMessage(chatId, infoText, {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: rows }
+    });
+  }
+
+  // ══════════════════════════
+  // DURATION SELECTED → Payment method
+  // ══════════════════════════
+  else if (data.startsWith("dur_")) {
+    const parts      = data.split("_");
+    const productId  = parseInt(parts[1]);
+    const durationId = parts[2];
+    const db         = loadDB();
+    const p          = db.products.find(x => x.id === productId);
+    const d          = p?.durations.find(x => x.id === durationId);
+    const bal        = getBalance(db, chatId);
+
+    if (!p || !d) { bot.sendMessage(chatId, "❌ Nahi mila."); return; }
+    if (d.stock <= 0) {
+      bot.sendMessage(chatId,
+        `❌ *Out of Stock!*\n\n*${p.name} - ${d.label}* abhi available nahi.\nDusra duration try karo.`,
+        { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: `prod_${p.id}` }]] }}
+      ); return;
+    }
+
+    // Payment method
+    const rows = [[{ text: `💳 UPI/QR se Pay — ₹${d.price}`, callback_data: `pay_upi_${p.id}_${d.id}` }]];
+    if (bal >= d.price) {
+      rows.push([{ text: `💰 Wallet se Pay — Balance: ₹${bal.toFixed(2)}`, callback_data: `pay_wal_${p.id}_${d.id}` }]);
+    }
+    rows.push([{ text: "🔙 Back", callback_data: `prod_${p.id}` }]);
+
+    bot.sendMessage(chatId,
+      `🔑 *${p.name}*\n` +
+      `⏱ Duration: *${d.label}*\n` +
+      `💰 Price: *₹${d.price}*\n` +
+      `📦 Stock: ${d.stock}\n` +
+      `💳 Wallet: ₹${bal.toFixed(2)}\n\n` +
+      `👇 *Payment method choose karo:*`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: rows } }
+    );
+  }
+
+  // ══════════════════════════
+  // PAY via UPI QR
+  // ══════════════════════════
+  else if (data.startsWith("pay_upi_")) {
+    const parts      = data.split("_");
+    const productId  = parseInt(parts[2]);
+    const durationId = parts[3];
+    const db         = loadDB();// DATABASE
 // ════════════════════════════════════════
 const DB_FILE = "./db.json";
 
